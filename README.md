@@ -19,8 +19,8 @@ Supports both **embedding models** (bidirectional) and **generative models** (ca
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone <repo-url>
-cd embeddings_viz
+git clone https://github.com/grafael/embeddings-viz.git
+cd embeddings-viz
 uv sync
 uv run embeddings-viz
 ```
