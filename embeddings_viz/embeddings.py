@@ -93,7 +93,7 @@ def reduce_dimensions(embeddings, method, n_components):
     elif method == "umap" and HAS_UMAP:
         n_neighbors = min(15, embeddings.shape[0] - 1)
         coords = UMAP(
-            n_components=n, n_neighbors=n_neighbors, random_state=42,
+            n_components=n, n_neighbors=n_neighbors, random_state=42, n_jobs=1,
         ).fit_transform(embeddings)
     else:
         coords = PCA(n_components=n).fit_transform(embeddings)
