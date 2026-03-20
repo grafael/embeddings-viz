@@ -131,24 +131,6 @@ input[type=range] {
   accent-color: #21918c;
 }
 
-.btn-analyze {
-  width: 100%;
-  padding: 10px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  border: 1px solid #21918c;
-  border-radius: 4px;
-  background: transparent;
-  color: #21918c;
-  margin-top: 8px;
-  font-family: inherit;
-  letter-spacing: .5px;
-}
-
-.btn-analyze:hover { background: rgba(33,145,140,.08); }
-.btn-analyze:disabled { opacity: .4; cursor: wait; }
-
 .model-select {
   width: 100%;
   padding: 8px 10px;
@@ -569,21 +551,13 @@ input[type=range] {
     </div>
   </div>
 
-  <!-- Sentence input -->
+  <!-- Sentence input + word selector -->
   <div class="section">
-    <div class="section-header">Data</div>
+    <div class="section-header">Sentence</div>
     <div class="section-body">
-      <input type="text" id="sentence" placeholder="Type a sentence..."
+      <input type="text" id="sentence" placeholder="Type a sentence and press Enter..."
              onkeydown="if(event.key==='Enter')analyze()">
-      <button class="btn-analyze" id="btn-analyze" onclick="analyze()">Analyze</button>
-    </div>
-  </div>
-
-  <!-- Word selector -->
-  <div class="section">
-    <div class="section-header">Words</div>
-    <div class="section-body">
-      <div class="word-buttons" id="word-buttons"></div>
+      <div class="word-buttons" id="word-buttons" style="margin-top:10px"></div>
     </div>
   </div>
 
@@ -1276,7 +1250,6 @@ window.analyze = async function() {
   const sentence = document.getElementById('sentence').value.trim();
   if (!sentence) return;
 
-  document.getElementById('btn-analyze').disabled = true;
   showLoading(true);
 
   const response = await fetch('/api/analyze', {
@@ -1286,9 +1259,8 @@ window.analyze = async function() {
   });
   const data = await response.json();
 
-  document.getElementById('btn-analyze').disabled = false;
   words = data.words;
-  selectedIdx = Math.min(selectedIdx, words.length - 1);
+  selectedIdx = 0;
   if (data.num_layers) updateLayerUI(data.num_layers);
   if (data.model_type) { modelType = data.model_type; updateModelTypeBadge(); }
 
