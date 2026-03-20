@@ -1,0 +1,40 @@
+# Default model to load on startup
+default_model: all-MiniLM-L6-v2
+
+# List of available models.
+# Each entry can be:
+#   - A plain string (treated as type: embedding)
+#   - A dict with "name" and "type" fields
+#
+# Supported types:
+#   embedding   - SentenceTransformer models (default)
+#   generative  - Causal LLMs (Qwen, Llama, GPT-2, etc.)
+models:
+  # --- Embedding models ---
+  - all-MiniLM-L6-v2
+  - all-MiniLM-L12-v2
+  - all-mpnet-base-v2
+  - all-distilroberta-v1
+  - paraphrase-MiniLM-L6-v2
+
+  # --- Generative models (small, CPU-friendly) ---
+  - name: gpt2                         # 124M params, 12 layers
+    type: generative
+  - name: distilgpt2                   # 82M params, 6 layers
+    type: generative
+  - name: Qwen/Qwen2.5-0.5B           # 500M params, 24 layers
+    type: generative
+  - name: HuggingFaceTB/SmolLM2-135M   # 135M params, 30 layers
+    type: generative
+  - name: openai-community/gpt2-medium  # 355M params, 24 layers
+    type: generative
+
+  # Larger models (need more RAM/GPU):
+  # - name: meta-llama/Llama-3.2-1B
+  #   type: generative
+  # - name: Qwen/Qwen2.5-1.5B
+  #   type: generative
+
+  # Local model path example:
+  # - name: /home/rafael/models/my-custom-model
+  #   type: generative

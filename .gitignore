@@ -1,0 +1,4 @@
+.claude/
+.venv/
+vocab/
+__pycache__/

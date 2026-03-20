@@ -1,0 +1,197 @@
+"""Model loading, vocabulary extraction, and progress tracking."""
+
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from embeddings_viz.config import (
+    MODEL_TYPE_MAP,
+    VOCAB_CACHE_DIR,
+    VOCAB_FILE,
+)
+
+model_state = {}
+
+# Progress tracker for async model loading (polled by the frontend).
+progress = {
+    "active": False,
+    "step": 0,
+    "total_steps": 3,
+    "step_name": "",
+    "detail": "",
+    "percent": 0,
+    "done": False,
+    "error": None,
+    "result": None,
+}
+
+
+def _update_progress(step, step_name, detail="", percent=0):
+    progress["step"] = step
+    progress["step_name"] = step_name
+    progress["detail"] = detail
+    progress["percent"] = percent
+
+
+
+def _extract_vocab_from_tokenizer(tokenizer):
+    """Extract clean whole words from a tokenizer's vocabulary."""
+    vocab = tokenizer.get_vocab()
+    total = len(vocab)
+    words = set()
+    for i, token in enumerate(tqdm(vocab, desc="Extracting vocabulary", unit="tok")):
+        # Strip common subword prefixes (WordPiece, BPE, SentencePiece)
+        clean = token.replace("##", "").replace("Ġ", "").replace("▁", "")
+        if clean.isalpha() and len(clean) > 1:
+            words.add(clean.lower())
+        if i % 1000 == 0:
+            _update_progress(2, "Extracting vocabulary", f"{i}/{total} tokens", int(i / total * 100))
+    _update_progress(2, "Extracting vocabulary", f"{len(words)} words found", 100)
+    return sorted(words)
+
+
+def _load_vocab(tokenizer):
+    """Load vocab from vocab.txt if present, otherwise extract from tokenizer."""
+    if VOCAB_FILE.exists():
+        with open(VOCAB_FILE) as f:
+            words = [line.strip() for line in f if line.strip()]
+        print(f"Loaded {len(words)} words from vocab.txt")
+        return words
+    words = _extract_vocab_from_tokenizer(tokenizer)
+    print(f"Vocabulary: {len(words)} words")
+    return words
+
+
+def _vocab_cache_path(model_name):
+    safe = model_name.replace("/", "_")
+    return VOCAB_CACHE_DIR / f"{safe}.npy"
+
+
+def _format_eta(seconds):
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}m {secs:02d}s"
+
+
+
+def _encode_vocab():
+    """Encode all vocab words using the currently loaded model."""
+    vocab_words = model_state["vocab_words"]
+    total = len(vocab_words)
+    batch_size = 64
+    if model_state["type"] == "embedding":
+        all_embs = []
+        t0 = time.monotonic()
+        for i in tqdm(range(0, total, batch_size), desc="Encoding vocabulary", unit="batch"):
+            batch = vocab_words[i : i + batch_size]
+            all_embs.append(model_state["model"].encode(batch, show_progress_bar=False))
+            done = min(i + batch_size, total)
+            elapsed = time.monotonic() - t0
+            eta = (elapsed / done) * (total - done) if done > 0 else 0
+            _update_progress(
+                3, "Encoding vocabulary",
+                f"{done}/{total} words — ETA {_format_eta(eta)}", int(done / total * 100),
+            )
+        return np.vstack(all_embs)
+    return _encode_vocab_generative()
+
+
+def _encode_vocab_generative(batch_size=32):
+    """Mean-pool the last hidden state for each vocab word (generative models)."""
+    tokenizer = model_state["tokenizer"]
+    transformer = model_state["transformer"]
+    device = transformer.device
+    vocab_words = model_state["vocab_words"]
+    total = len(vocab_words)
+    all_embs = []
+    t0 = time.monotonic()
+    for i in tqdm(range(0, total, batch_size), desc="Encoding vocabulary", unit="batch"):
+        batch = vocab_words[i : i + batch_size]
+        encoded = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=64)
+        encoded = {k: v.to(device) for k, v in encoded.items()}
+        with torch.no_grad():
+            output = transformer(**encoded)
+        mask = encoded["attention_mask"].unsqueeze(-1).float()
+        pooled = (output.last_hidden_state * mask).sum(dim=1) / mask.sum(dim=1)
+        all_embs.append(pooled.cpu().numpy())
+        done = min(i + batch_size, total)
+        elapsed = time.monotonic() - t0
+        eta = (elapsed / done) * (total - done) if done > 0 else 0
+        _update_progress(
+            3, "Encoding vocabulary",
+            f"{done}/{total} words — ETA {_format_eta(eta)}", int(done / total * 100),
+        )
+    return np.vstack(all_embs)
+
+
+
+def load_model(model_name):
+    """Download (if needed) and initialize a model with its vocabulary embeddings."""
+    model_type = MODEL_TYPE_MAP.get(model_name, "embedding")
+    print(f"\n{'=' * 50}")
+    print(f"Loading {model_name} ({model_type})")
+    print(f"{'=' * 50}")
+
+    model_state["name"] = model_name
+    model_state["type"] = model_type
+
+    # Step 1 — Download / load the model weights
+    _update_progress(1, "Downloading model", model_name)
+    print("\n[1/3] Downloading model...")
+    if model_type == "generative":
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32)
+        model.eval()
+        model_state["tokenizer"] = tokenizer
+        # Extract the inner base model — attribute name varies by architecture
+        if hasattr(model, "model"):           # Llama, Qwen, Mistral
+            model_state["transformer"] = model.model
+        elif hasattr(model, "transformer"):   # GPT-2, GPT-Neo
+            model_state["transformer"] = model.transformer
+        elif hasattr(model, "gpt_neox"):      # GPT-NeoX, Pythia
+            model_state["transformer"] = model.gpt_neox
+        else:
+            model_state["transformer"] = model
+        model_state["model"] = None
+        model_state["causal_lm"] = model
+    else:
+        sentence_transformer = SentenceTransformer(model_name)
+        model_state["model"] = sentence_transformer
+        model_state["tokenizer"] = sentence_transformer.tokenizer
+        model_state["transformer"] = sentence_transformer[0].auto_model
+        model_state["causal_lm"] = None
+
+    # Step 2 — Build the vocabulary
+    _update_progress(2, "Building vocabulary", "Extracting from tokenizer...")
+    print("\n[2/3] Building vocabulary...")
+    model_state["vocab_words"] = _load_vocab(model_state["tokenizer"])
+    vocab_words = model_state["vocab_words"]
+
+    # Step 3 — Load or compute vocabulary embeddings
+    _update_progress(3, "Loading embeddings", "Checking cache...")
+    print("\n[3/3] Loading vocabulary embeddings...")
+    cache = _vocab_cache_path(model_name)
+    if cache.exists():
+        vocab_embs = np.load(cache)
+        if vocab_embs.shape[0] != len(vocab_words):
+            print(f"Cache stale — re-encoding {len(vocab_words)} words")
+            vocab_embs = _encode_vocab()
+            np.save(cache, vocab_embs)
+        else:
+            _update_progress(3, "Loading embeddings", f"Loaded from cache ({len(vocab_words)} words)", 100)
+            print(f"Loaded from cache ({len(vocab_words)} words)")
+    else:
+        print(f"Encoding {len(vocab_words)} words (first time, will be cached)")
+        vocab_embs = _encode_vocab()
+        np.save(cache, vocab_embs)
+    model_state["vocab_embeddings"] = vocab_embs
+
+    print(f"\nReady — {model_name}\n")
