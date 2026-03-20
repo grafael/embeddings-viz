@@ -69,7 +69,7 @@ def _load_vocab(tokenizer):
 
 def _vocab_cache_path(model_name):
     safe = model_name.replace("/", "_")
-    return VOCAB_CACHE_DIR / f"{safe}.npy"
+    return VOCAB_CACHE_DIR / f"{safe}_v3.npy"
 
 
 def _format_eta(seconds):
@@ -80,17 +80,30 @@ def _format_eta(seconds):
 
 
 
-def _encode_vocab():
-    """Encode all vocab words using the currently loaded model."""
+def _encode_vocab(batch_size=64):
+    """Encode all vocab words into the same representation space used for
+    contextual word embeddings.
+
+    Embedding models: run each word through the transformer and average the
+    word's sub-tokens from the last hidden state (excluding CLS/SEP). This
+    matches the extraction in get_contextual_word_embeddings.
+
+    Generative models: use the input embedding matrix directly, since causal
+    hidden states for isolated words are degenerate (all similarities ~1.0).
+    """
+    tokenizer = model_state["tokenizer"]
+    transformer = model_state["transformer"]
     vocab_words = model_state["vocab_words"]
     total = len(vocab_words)
-    batch_size = 64
-    if model_state["type"] == "embedding":
+    t0 = time.monotonic()
+
+    if model_state["type"] == "generative":
+        embed_matrix = transformer.get_input_embeddings().weight.detach()
         all_embs = []
-        t0 = time.monotonic()
-        for i in tqdm(range(0, total, batch_size), desc="Encoding vocabulary", unit="batch"):
-            batch = vocab_words[i : i + batch_size]
-            all_embs.append(model_state["model"].encode(batch, show_progress_bar=False))
+        for i in range(0, total, batch_size):
+            for word in vocab_words[i : i + batch_size]:
+                token_ids = tokenizer.encode(word, add_special_tokens=False)
+                all_embs.append(embed_matrix[token_ids].mean(dim=0).cpu().numpy())
             done = min(i + batch_size, total)
             elapsed = time.monotonic() - t0
             eta = (elapsed / done) * (total - done) if done > 0 else 0
@@ -99,27 +112,28 @@ def _encode_vocab():
                 f"{done}/{total} words — ETA {_format_eta(eta)}", int(done / total * 100),
             )
         return np.vstack(all_embs)
-    return _encode_vocab_generative()
 
-
-def _encode_vocab_generative(batch_size=32):
-    """Mean-pool the last hidden state for each vocab word (generative models)."""
-    tokenizer = model_state["tokenizer"]
-    transformer = model_state["transformer"]
+    # Embedding models: forward pass through transformer, average word tokens only
     device = transformer.device
-    vocab_words = model_state["vocab_words"]
-    total = len(vocab_words)
     all_embs = []
-    t0 = time.monotonic()
-    for i in tqdm(range(0, total, batch_size), desc="Encoding vocabulary", unit="batch"):
+    for i in range(0, total, batch_size):
         batch = vocab_words[i : i + batch_size]
-        encoded = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=64)
+        encoded = tokenizer(
+            batch, return_tensors="pt", padding=True, truncation=True,
+            max_length=64, return_offsets_mapping=True,
+        )
+        offsets = encoded.pop("offset_mapping")
         encoded = {k: v.to(device) for k, v in encoded.items()}
         with torch.no_grad():
-            output = transformer(**encoded)
-        mask = encoded["attention_mask"].unsqueeze(-1).float()
-        pooled = (output.last_hidden_state * mask).sum(dim=1) / mask.sum(dim=1)
-        all_embs.append(pooled.cpu().numpy())
+            hidden = transformer(**encoded).last_hidden_state.cpu()
+        for j in range(len(batch)):
+            # Only average sub-tokens belonging to the word (exclude CLS/SEP)
+            word_tokens = [t for t, (s, e) in enumerate(offsets[j]) if s != e]
+            if word_tokens:
+                all_embs.append(hidden[j, word_tokens].mean(dim=0).numpy())
+            else:
+                mask = encoded["attention_mask"][j].cpu().bool()
+                all_embs.append(hidden[j, mask].mean(dim=0).numpy())
         done = min(i + batch_size, total)
         elapsed = time.monotonic() - t0
         eta = (elapsed / done) * (total - done) if done > 0 else 0
