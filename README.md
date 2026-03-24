@@ -8,11 +8,11 @@ Supports both **embedding models** (bidirectional) and **generative models** (ca
 
 - **Contextual embeddings** — words encoded using full sentence context
 - **3D/2D projection** — UMAP, t-SNE, or PCA dimensionality reduction
-- **Nearest neighbors** — closest vocabulary words by cosine similarity
+- **Nearest neighbors** — closest vocabulary words by cosine similarity (embedding models) or logit-based scoring via lm_head projection (generative models)
+- **Layer Flow** — Sankey-style visualization showing how a word's top neighbors evolve across transformer layers
 - **Layer selection** — extract embeddings from any transformer layer
 - **Isolated vs. contextual** — compare how sentence context shifts a word's embedding
 - **Next-token prediction** — top candidates with probabilities (generative models)
-- **Model switching** — swap models on the fly from the UI
 
 ## Getting Started
 
