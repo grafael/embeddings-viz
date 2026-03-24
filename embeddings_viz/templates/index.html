@@ -35,6 +35,7 @@ body {
 
 .main {
   flex: 1;
+  min-width: 0;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -324,6 +325,7 @@ input[type=range] {
 .plot-tab:hover { color: #333; }
 .plot-tab.active { color: #21918c; border-bottom-color: #21918c; background: rgba(33,145,140,.06); }
 .plot-tab[data-tab="candidates"].active { color: #e76f51; border-bottom-color: #e76f51; background: rgba(231,111,81,.06); }
+.plot-tab[data-tab="layer-flow"].active { color: #31688e; border-bottom-color: #31688e; background: rgba(49,104,142,.06); }
 
 /* ==========================================================================
    3D scene container
@@ -679,9 +681,11 @@ input[type=range] {
   <div id="plot-tabs" style="display:none">
     <button class="plot-tab active" data-tab="neighbors" onclick="switchPlotTab('neighbors')">Neighbors</button>
     <button class="plot-tab" data-tab="candidates" onclick="switchPlotTab('candidates')">Candidates</button>
+    <button class="plot-tab" data-tab="layer-flow" onclick="switchPlotTab('layer-flow')">Layer Flow</button>
   </div>
 
   <div id="scene-box"></div>
+  <div id="layer-flow-box" style="display:none; flex:1; min-height:0; min-width:0; overflow:auto; background:#f0f2f5; padding:20px;"></div>
   <div id="hint"></div>
 
   <div class="loading-overlay" id="loading" style="display:none">
@@ -794,6 +798,7 @@ function initScene() {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.rotateSpeed = 0.8;
+  renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.6));
   const keyLight = new THREE.DirectionalLight(0xffffff, 1);
@@ -1138,8 +1143,114 @@ window.switchPlotTab = function(tab) {
   document.querySelectorAll('.plot-tab').forEach(btn =>
     btn.classList.toggle('active', btn.dataset.tab === tab)
   );
-  if (lastSceneData) buildScene(lastSceneData);
+  const sceneBox = document.getElementById('scene-box');
+  const layerFlow = document.getElementById('layer-flow-box');
+  if (tab === 'layer-flow') {
+    sceneBox.style.display = 'none';
+    layerFlow.style.display = '';
+    if (words.length) fetchLayerEvolution();
+  } else {
+    sceneBox.style.display = '';
+    layerFlow.style.display = 'none';
+    if (lastSceneData) buildScene(lastSceneData);
+  }
 };
+
+// ---- Layer Flow (Sankey-style neighbor evolution) ----
+
+async function fetchLayerEvolution() {
+  const box = document.getElementById('layer-flow-box');
+  box.innerHTML = '<div style="text-align:center;padding:40px;color:#888">Computing layer evolution...</div>';
+  const response = await fetch('/api/layer_evolution', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({selected_idx: selectedIdx, n_neighbors: 10}),
+  });
+  const data = await response.json();
+  buildLayerEvolution(data, box);
+}
+
+function buildLayerEvolution(data, container) {
+  const layers = data.layers;
+  const numLayers = layers.length;
+  const N = layers[0].neighbors.length;
+
+  const COL_W = 82, GAP = 50, STEP = COL_W + GAP;
+  const ROW_H = 26, HDR_H = 36, PAD = 24;
+  const totalW = PAD * 2 + numLayers * STEP - GAP;
+  const totalH = PAD * 2 + HDR_H + N * ROW_H + 10;
+
+  // Track which words appear in 2+ layers for coloring
+  const wordCount = {};
+  layers.forEach(l => l.neighbors.forEach(nb => {
+    wordCount[nb.word] = (wordCount[nb.word] || 0) + 1;
+  }));
+  const palette = [
+    '#21918c','#440154','#31688e','#35b779','#e76f51',
+    '#6ece58','#b5367a','#1f9e89','#fde725','#482878',
+    '#3b528b','#5dc963','#d8456c','#25848e','#90d743',
+  ];
+  const persistent = Object.entries(wordCount)
+    .filter(([, c]) => c >= 2)
+    .sort((a, b) => b[1] - a[1]);
+  const wordColor = {};
+  persistent.forEach(([word], i) => { wordColor[word] = palette[i % palette.length]; });
+
+  function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+  function trunc(s, n) { return s.length > n ? s.slice(0, n - 1) + '\u2026' : s; }
+
+  let svg = `<svg width="${totalW}" height="${totalH}" xmlns="http://www.w3.org/2000/svg"
+    style="font-family:'Segoe UI',Roboto,system-ui,sans-serif">`;
+
+  // Connections (drawn first, behind everything)
+  svg += '<g opacity="0.45">';
+  for (let li = 0; li < numLayers - 1; li++) {
+    const curr = layers[li].neighbors;
+    const next = layers[li + 1].neighbors;
+    for (let ci = 0; ci < curr.length; ci++) {
+      const word = curr[ci].word;
+      const ni = next.findIndex(n => n.word === word);
+      if (ni === -1) continue;
+      const x1 = PAD + li * STEP + COL_W + 2;
+      const y1 = PAD + HDR_H + ci * ROW_H + ROW_H / 2;
+      const x2 = PAD + (li + 1) * STEP - 2;
+      const y2 = PAD + HDR_H + ni * ROW_H + ROW_H / 2;
+      const cx = (x1 + x2) / 2;
+      const color = wordColor[word] || '#bbb';
+      const sw = 1.5 + (wordCount[word] / numLayers) * 2.5;
+      svg += `<path d="M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}" fill="none" stroke="${color}" stroke-width="${sw.toFixed(1)}"/>`;
+    }
+  }
+  svg += '</g>';
+
+  // Layer columns
+  for (let li = 0; li < numLayers; li++) {
+    const x = PAD + li * STEP;
+    const y = PAD;
+    const label = li === 0 ? 'Emb' : 'L' + li;
+
+    // Column background
+    svg += `<rect x="${x - 4}" y="${y + HDR_H - 6}" width="${COL_W + 8}" height="${N * ROW_H + 8}" rx="4" fill="white" opacity="0.6"/>`;
+
+    // Header
+    svg += `<text x="${x + COL_W / 2}" y="${y + 16}" text-anchor="middle" fill="#888" font-size="11" font-weight="600">${label}</text>`;
+
+    // Words
+    layers[li].neighbors.forEach((nb, ri) => {
+      const wy = y + HDR_H + ri * ROW_H;
+      const color = wordColor[nb.word] || '#666';
+      const fw = wordColor[nb.word] ? '600' : '400';
+      svg += `<text x="${x + 2}" y="${wy + 17}" fill="${color}" font-size="11.5" font-weight="${fw}">${esc(trunc(nb.word, 10))}</text>`;
+      svg += `<text x="${x + COL_W - 2}" y="${wy + 17}" text-anchor="end" fill="#aaa" font-size="9.5" font-family="'Courier New',monospace">${nb.sim.toFixed(2)}</text>`;
+    });
+  }
+
+  // Title
+  svg += `<text x="${PAD}" y="${totalH - 6}" fill="#aaa" font-size="10">Top 10 neighbors for "${esc(data.selected_word)}" across ${numLayers} layers</text>`;
+
+  svg += '</svg>';
+  container.innerHTML = svg;
+}
 
 // ---- UI helpers ----
 
@@ -1303,6 +1414,9 @@ async function visualize() {
   showLoading(false);
   updateInspector(data);
   renderContext(data.predicted_token);
+
+  // Refresh Layer Flow if it's the active tab
+  if (activePlotTab === 'layer-flow') fetchLayerEvolution();
 }
 
 // ==========================================================================
@@ -1518,21 +1632,26 @@ document.getElementById('model-select').addEventListener('change', async functio
             clearInterval(poll);
 
             if (progressData.result && progressData.result.status === 'ok') {
-              // Reset UI for new model
-              words = [];
-              selectedIdx = 0;
-              document.getElementById('word-buttons').innerHTML = '';
-              document.getElementById('inspector-content').innerHTML =
-                '<p class="inspector-hint">Model changed. Enter a sentence to analyze.</p>';
-              document.getElementById('emb-canvas').height = 0;
-              document.getElementById('emb-info').textContent = '';
-              document.getElementById('emb-stats').innerHTML = '';
               if (progressData.result.num_layers) updateLayerUI(progressData.result.num_layers);
               if (progressData.result.model_type) {
                 modelType = progressData.result.model_type;
                 updateModelTypeBadge();
               }
-              document.getElementById('context-section').style.display = 'none';
+              // Re-analyze existing sentence or reset UI
+              const sentence = document.getElementById('sentence').value.trim();
+              if (sentence) {
+                analyze();
+              } else {
+                words = [];
+                selectedIdx = 0;
+                document.getElementById('word-buttons').innerHTML = '';
+                document.getElementById('inspector-content').innerHTML =
+                  '<p class="inspector-hint">Model changed. Enter a sentence to analyze.</p>';
+                document.getElementById('emb-canvas').height = 0;
+                document.getElementById('emb-info').textContent = '';
+                document.getElementById('emb-stats').innerHTML = '';
+                document.getElementById('context-section').style.display = 'none';
+              }
             } else if (progressData.error) {
               console.error('Model loading failed:', progressData.error);
               document.getElementById('inspector-content').innerHTML =

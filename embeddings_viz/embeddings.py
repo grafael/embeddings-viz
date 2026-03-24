@@ -80,6 +80,36 @@ def get_contextual_word_embeddings(sentence, words, layer=None):
 
 
 
+def get_all_layer_embeddings(sentence, words):
+    """Get word embeddings at every hidden layer in a single forward pass."""
+    device = model_state["transformer"].device
+    encoded = model_state["tokenizer"](
+        sentence, return_tensors="pt", truncation=True, max_length=512,
+        return_offsets_mapping=True,
+    )
+    offset_mapping = encoded.pop("offset_mapping")[0].tolist()
+    encoded = {k: v.to(device) for k, v in encoded.items()}
+    with torch.no_grad():
+        output = model_state["transformer"](**encoded, output_hidden_states=True)
+
+    word_spans = _find_word_spans(sentence, words)
+    all_layers = []
+    for hidden_state in output.hidden_states:
+        token_embs = hidden_state.squeeze(0).cpu().numpy()
+        word_embs = []
+        for word, (ws, we) in zip(words, word_spans):
+            indices = [
+                t for t, (ts, te) in enumerate(offset_mapping)
+                if ts != te and max(ts, ws) < min(te, we)
+            ]
+            if indices:
+                word_embs.append(token_embs[indices].mean(axis=0))
+            else:
+                word_embs.append(encode_single_word(word))
+        all_layers.append(np.array(word_embs))
+    return all_layers
+
+
 def reduce_dimensions(embeddings, method, n_components):
     """Project high-dimensional embeddings to 2D or 3D."""
     n = min(n_components, embeddings.shape[0], embeddings.shape[1])

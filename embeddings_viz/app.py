@@ -13,6 +13,7 @@ from embeddings_viz.embeddings import (
     HAS_UMAP,
     _find_word_spans,
     encode_single_word,
+    get_all_layer_embeddings,
     get_contextual_word_embeddings,
     reduce_dimensions,
 )
@@ -24,10 +25,46 @@ session_state = {"sentence": "", "words": [], "selected_idx": 0}
 
 
 
-def _find_neighbors(selected_emb, selected_word, n_neighbors):
+def _vocab_scores_from_hidden(hidden_np, apply_norm=True):
+    """Project hidden states through (optional ln_f) + lm_head to get per-vocab-word scores.
+
+    For transformers, hidden_states[-1] already has the final LayerNorm applied,
+    so pass apply_norm=False for the last layer.  Intermediate layers need apply_norm=True.
+
+    Returns an array of shape (num_vocab_words,) with values in (0, 1],
+    where 1.0 = the top-scoring word.
+    """
+    final_norm = model_state["final_norm"]
+    lm_head = model_state["lm_head"]
+    device = next(lm_head.parameters()).device
+
+    hidden = torch.tensor(hidden_np, dtype=torch.float32).to(device)
+    with torch.no_grad():
+        if apply_norm and final_norm is not None:
+            hidden = final_norm(hidden)
+        logits = lm_head(hidden).squeeze(0).cpu().numpy()  # (vocab_size,)
+
+    # Average logits for multi-subtoken words
+    vocab_token_ids = model_state["vocab_token_ids"]
+    scores = np.array([logits[ids].mean() for ids in vocab_token_ids])
+
+    # Convert to relative scale: top = 1.0, others decay exponentially
+    scores = scores - scores.max()
+    scores = np.exp(scores)
+    return scores
+
+
+def _find_neighbors(selected_emb, selected_word, n_neighbors, layer=None):
     """Find the nearest vocabulary neighbors for a given embedding."""
     vocab_words = model_state["vocab_words"]
-    sims = cosine_similarity(selected_emb, model_state["vocab_embeddings"])[0]
+    if model_state["type"] == "generative" and model_state.get("lm_head") is not None:
+        # hidden_states[-1] / last_hidden_state already include final LayerNorm;
+        # intermediate layers do not.
+        num_layers = model_state["transformer"].config.num_hidden_layers
+        need_norm = not (layer is None or layer == num_layers)
+        sims = _vocab_scores_from_hidden(selected_emb, apply_norm=need_norm)
+    else:
+        sims = cosine_similarity(selected_emb, model_state["vocab_embeddings"])[0]
     ranked = np.argsort(sims)[::-1]
     top_indices = np.array([
         i for i in ranked if vocab_words[i].lower() != selected_word.lower()
@@ -181,7 +218,7 @@ def visualize():
 
     # Nearest vocabulary neighbors
     sims, top_indices, neighbor_words, neighbor_embs, neighbor_sims = _find_neighbors(
-        selected_emb, selected_word, n_neighbors,
+        selected_emb, selected_word, n_neighbors, layer=layer,
     )
 
     # Isolated embedding (same word without sentence context)
@@ -237,6 +274,44 @@ def visualize():
 
     return jsonify(result)
 
+
+
+@app.route("/api/layer_evolution", methods=["POST"])
+def layer_evolution():
+    """Compute top neighbors at every layer for the selected word."""
+    data = request.json
+    selected_idx = data.get("selected_idx", 0)
+    n_neighbors = data.get("n_neighbors", 10)
+
+    words = session_state["words"]
+    sentence = session_state["sentence"]
+    if not words or not sentence:
+        return jsonify({"error": "No sentence analyzed"}), 400
+
+    selected_word = words[selected_idx]
+    vocab_words = model_state["vocab_words"]
+    vocab_embs = model_state["vocab_embeddings"]
+
+    use_logits = model_state["type"] == "generative" and model_state.get("lm_head") is not None
+
+    all_layer_embs = get_all_layer_embeddings(sentence, words)
+    last_layer_idx = len(all_layer_embs) - 1
+    layers_data = []
+    for layer_idx, layer_embs in enumerate(all_layer_embs):
+        selected_emb = layer_embs[selected_idx].reshape(1, -1)
+        if use_logits:
+            # hidden_states[-1] already has final LayerNorm; earlier layers don't
+            sims = _vocab_scores_from_hidden(selected_emb, apply_norm=(layer_idx < last_layer_idx))
+        else:
+            sims = cosine_similarity(selected_emb, vocab_embs)[0]
+        ranked = np.argsort(sims)[::-1]
+        top = [i for i in ranked if vocab_words[i].lower() != selected_word.lower()][:n_neighbors]
+        layers_data.append({
+            "layer": layer_idx,
+            "neighbors": [{"word": vocab_words[i], "sim": float(sims[i])} for i in top],
+        })
+
+    return jsonify({"layers": layers_data, "selected_word": selected_word})
 
 
 def _do_load_model(model_name):

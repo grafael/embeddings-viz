@@ -176,6 +176,17 @@ def load_model(model_name):
             model_state["transformer"] = model
         model_state["model"] = None
         model_state["causal_lm"] = model
+        # Store final layer norm and lm_head for projecting hidden states to vocab
+        causal_lm = model
+        if hasattr(causal_lm, "transformer") and hasattr(causal_lm.transformer, "ln_f"):
+            model_state["final_norm"] = causal_lm.transformer.ln_f      # GPT-2, GPT-Neo
+        elif hasattr(causal_lm, "model") and hasattr(causal_lm.model, "norm"):
+            model_state["final_norm"] = causal_lm.model.norm            # Llama, Mistral
+        elif hasattr(causal_lm, "gpt_neox") and hasattr(causal_lm.gpt_neox, "final_layer_norm"):
+            model_state["final_norm"] = causal_lm.gpt_neox.final_layer_norm  # GPT-NeoX
+        else:
+            model_state["final_norm"] = None
+        model_state["lm_head"] = causal_lm.lm_head
     else:
         sentence_transformer = SentenceTransformer(model_name)
         model_state["model"] = sentence_transformer
@@ -188,6 +199,15 @@ def load_model(model_name):
     print("\n[2/3] Building vocabulary...")
     model_state["vocab_words"] = _load_vocab(model_state["tokenizer"])
     vocab_words = model_state["vocab_words"]
+
+    # Precompute token-ID lists for fast logit→vocab mapping (generative only)
+    if model_type == "generative":
+        model_state["vocab_token_ids"] = [
+            model_state["tokenizer"].encode(w, add_special_tokens=False)
+            for w in vocab_words
+        ]
+    else:
+        model_state["vocab_token_ids"] = None
 
     # Step 3 — Load or compute vocabulary embeddings
     _update_progress(3, "Loading embeddings", "Checking cache...")
