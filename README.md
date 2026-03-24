@@ -1,10 +1,13 @@
 # Embedding Projector
 
+
 Interactive 3D visualization of word embeddings in semantic space. Type a sentence, click a word, and explore how it relates to its nearest neighbors in real time.
 
 Supports both **embedding models** (bidirectional) and **generative models** (causal), with layer selection and next-token prediction.
 
 ## Features
+
+https://github.com/user-attachments/assets/7551609a-ef2c-4484-b1fa-633c23a8c57e
 
 - **Contextual embeddings** — words encoded using full sentence context
 - **3D/2D projection** — UMAP, t-SNE, or PCA dimensionality reduction
