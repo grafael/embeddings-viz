@@ -855,6 +855,18 @@ function viridisColor(t) {
   return new THREE.Color(`rgb(${r},${g},${b})`);
 }
 
+function lavaColor(t) {
+  // Dark maroon → red → orange → yellow
+  const stops = [[48,8,8], [140,20,10], [210,60,10], [240,140,20], [255,220,80]];
+  const s = t * (stops.length - 1);
+  const i = Math.min(Math.floor(s), stops.length - 2);
+  const f = s - i;
+  const r = Math.round(stops[i][0] + f * (stops[i+1][0] - stops[i][0]));
+  const g = Math.round(stops[i][1] + f * (stops[i+1][1] - stops[i][1]));
+  const b = Math.round(stops[i][2] + f * (stops[i+1][2] - stops[i][2]));
+  return new THREE.Color(`rgb(${r},${g},${b})`);
+}
+
 function makeLabel(text, style) {
   const div = document.createElement('div');
   div.style.cssText = 'white-space:nowrap; pointer-events:none; '
@@ -1019,7 +1031,7 @@ function buildScene(data) {
       const geometry = is3D
         ? new THREE.OctahedronGeometry(0.12)
         : new THREE.CircleGeometry(0.1, 4);
-      const isoColor = new THREE.Color(0x35b779);
+      const isoColor = lavaColor(0.7);
       const material = is3D
         ? new THREE.MeshStandardMaterial({
             color: isoColor, metalness: 0.3, roughness: 0.3,
@@ -1041,10 +1053,72 @@ function buildScene(data) {
         new THREE.Vector3(selectedPoint.x, selectedPoint.y, selectedPoint.z),
         new THREE.Vector3(iso.x, iso.y, iso.z),
       ]);
-      const lineMat = new THREE.LineDashedMaterial({ color: 0x35b779, dashSize: 0.1, gapSize: 0.05 });
+      const lineMat = new THREE.LineDashedMaterial({ color: lavaColor(0.5), dashSize: 0.1, gapSize: 0.05 });
       const line = new THREE.Line(lineGeo, lineMat);
       line.computeLineDistances();
       scene.add(line);
+
+      // Linking lines between shared words in both neighbor clouds
+      if (data.isoNeighborPoints) {
+        const ctxByWord = {};
+        for (const n of data.neighborPoints) ctxByWord[n.word] = n;
+        for (const isoNb of data.isoNeighborPoints) {
+          const ctxNb = ctxByWord[isoNb.word];
+          if (!ctxNb) continue;
+          const linkGeo = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(ctxNb.x, ctxNb.y, ctxNb.z),
+            new THREE.Vector3(isoNb.x, isoNb.y, isoNb.z),
+          ]);
+          const linkMat = new THREE.LineDashedMaterial({
+            color: 0xaaaaaa, transparent: true, opacity: 0.4,
+            dashSize: 0.06, gapSize: 0.04,
+          });
+          const linkLine = new THREE.Line(linkGeo, linkMat);
+          linkLine.computeLineDistances();
+          scene.add(linkLine);
+        }
+      }
+
+      // Isolated neighbors
+      if (data.isoNeighborPoints) {
+        for (const nb of data.isoNeighborPoints) {
+          // Line from isolated point to its neighbor
+          const nbLineGeo = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(iso.x, iso.y, iso.z),
+            new THREE.Vector3(nb.x, nb.y, nb.z),
+          ]);
+          const nbLineMat = new THREE.LineBasicMaterial({
+            color: lavaColor(0.4), transparent: true, opacity: 0.08 + nb.tint * 0.35,
+          });
+          scene.add(new THREE.Line(nbLineGeo, nbLineMat));
+
+          const t = nb.tint;
+          const radius = is3D ? (0.04 + t * 0.08) : (0.06 + t * 0.12);
+          const nbColor = lavaColor(t);
+          const nbGeometry = is3D
+            ? new THREE.SphereGeometry(radius, 24, 24)
+            : new THREE.CircleGeometry(radius, 32);
+          const nbMaterial = is3D
+            ? new THREE.MeshStandardMaterial({
+                color: nbColor, metalness: 0.2, roughness: 0.5,
+                emissive: nbColor, emissiveIntensity: t * 0.5,
+                transparent: true, opacity: 0.4 + t * 0.6,
+              })
+            : new THREE.MeshBasicMaterial({ color: nbColor, transparent: true, opacity: 0.5 + t * 0.5 });
+          const nbMesh = new THREE.Mesh(nbGeometry, nbMaterial);
+          nbMesh.position.set(nb.x, nb.y, nb.z);
+          nbMesh.userData = { word: nb.word, rawSim: nb.rawSim, type: 'iso-neighbor' };
+          scene.add(nbMesh);
+          hoverables.push(nbMesh);
+
+          if (t > 0.2) {
+            const nbLabel = makeLabel(nb.word);
+            nbLabel.element.style.opacity = (0.4 + t * 0.6).toFixed(2);
+            nbLabel.position.set(nb.x, nb.y + radius + 0.12, nb.z);
+            scene.add(nbLabel);
+          }
+        }
+      }
     }
 
   // ---- Candidates tab ----
@@ -1458,6 +1532,24 @@ function updateInspector(data) {
       + '<span class="neighbor-sim">' + neighbor.sim.toFixed(3) + '</span>'
       + '</div></div>';
   });
+
+  // Isolated neighbors list
+  if (data.iso_neighbors && data.iso_neighbors.length) {
+    html += '<div class="divider"></div>';
+    html += '<div class="panel-title" style="color:#d23c0c">Isolated Neighbors</div>';
+    data.iso_neighbors.forEach((neighbor, i) => {
+      const barWidth = Math.max(6, Math.round(40 * neighbor.bar_t));
+      html += '<div class="neighbor-row">'
+        + '<div class="neighbor-left">'
+        + '<span class="neighbor-rank" style="color:#d23c0c">' + (i + 1) + '.</span>'
+        + '<span class="neighbor-word">' + neighbor.word + '</span>'
+        + '</div>'
+        + '<div class="neighbor-right">'
+        + '<div class="neighbor-bar" style="width:' + barWidth + 'px;background:' + neighbor.bar_color + '"></div>'
+        + '<span class="neighbor-sim">' + neighbor.sim.toFixed(3) + '</span>'
+        + '</div></div>';
+    });
+  }
 
   // Predicted candidates (generative models)
   if (data.candidates && data.candidates.length) {

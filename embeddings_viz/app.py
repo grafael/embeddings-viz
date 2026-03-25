@@ -18,7 +18,7 @@ from embeddings_viz.embeddings import (
     reduce_dimensions,
 )
 from embeddings_viz.models import load_model, model_state, progress
-from embeddings_viz.scene import build_neighbors_panel, build_scene_json
+from embeddings_viz.scene import _lava_color, build_neighbors_panel, build_scene_json
 
 app = Flask(__name__)
 session_state = {"sentence": "", "words": [], "selected_idx": 0}
@@ -223,8 +223,14 @@ def visualize():
 
     # Isolated embedding (same word without sentence context)
     isolated_emb = None
+    iso_sims, iso_top_indices, iso_neighbor_words, iso_neighbor_embs, iso_neighbor_sims = (
+        None, None, [], None, [],
+    )
     if show_isolated:
         isolated_emb = get_contextual_word_embeddings(selected_word, [selected_word], layer=layer)
+        iso_sims, iso_top_indices, iso_neighbor_words, iso_neighbor_embs, iso_neighbor_sims = (
+            _find_neighbors(isolated_emb, selected_word, n_neighbors, layer=layer)
+        )
 
     # Next-token candidates (generative models only)
     candidate_words, candidate_probs, candidate_embs, predicted_token, predicted_rank = (
@@ -232,18 +238,45 @@ def visualize():
     )
 
     # Reduce all embeddings together so they share the same coordinate space
+    # (isolated embedding is projected separately so the shift isn't overwhelmed)
     emb_parts = [sentence_embs]
-    if isolated_emb is not None:
-        emb_parts.append(isolated_emb)
     if candidate_embs is not None:
         emb_parts.append(candidate_embs)
     emb_parts.append(neighbor_embs)
+    if iso_neighbor_embs is not None:
+        emb_parts.append(iso_neighbor_embs)
     coords = reduce_dimensions(np.vstack(emb_parts), dr_method, n_dims)
 
-    sentence_coords, isolated_coords, cand_coords, neighbor_coords = _slice_coordinates(
-        coords, len(words),
-        isolated_emb is not None, candidate_words, candidate_embs is not None,
+    # Slice main groups (without isolated)
+    n_iso_neighbors = len(iso_neighbor_words)
+    if n_iso_neighbors > 0:
+        iso_neighbor_coords = coords[-n_iso_neighbors:]
+        coords_main = coords[:-n_iso_neighbors]
+    else:
+        iso_neighbor_coords = None
+        coords_main = coords
+
+    sentence_coords, _, cand_coords, neighbor_coords = _slice_coordinates(
+        coords_main, len(words),
+        False, candidate_words, candidate_embs is not None,
     )
+
+    # Project isolated embedding separately with only sentence context so the
+    # contextual-vs-isolated shift is visible instead of crushed by neighbor spread.
+    isolated_coords = None
+    if isolated_emb is not None:
+        iso_all = np.vstack([sentence_embs, isolated_emb])
+        iso_proj = reduce_dimensions(iso_all, "pca", n_dims)
+        displacement = iso_proj[-1] - iso_proj[selected_idx]
+        # Scale displacement to match the main scene's spread
+        main_scale = np.std(coords_main)
+        mini_scale = np.std(iso_proj)
+        if mini_scale > 1e-9:
+            displacement *= main_scale / mini_scale
+        isolated_coords = (sentence_coords[selected_idx] + displacement).reshape(1, -1)
+        # Shift isolated neighbors by the same displacement
+        if iso_neighbor_coords is not None:
+            iso_neighbor_coords = iso_neighbor_coords + displacement
 
     scene = build_scene_json(
         sentence_coords, neighbor_coords, words, neighbor_words,
@@ -252,6 +285,9 @@ def visualize():
         candidate_coords=cand_coords,
         candidate_words=candidate_words,
         candidate_probs=candidate_probs,
+        iso_neighbor_coords=iso_neighbor_coords,
+        iso_neighbor_words=iso_neighbor_words,
+        iso_neighbor_sims=iso_neighbor_sims,
     )
 
     neighbors_panel = build_neighbors_panel(neighbor_words, sims, top_indices, n_neighbors)
@@ -264,6 +300,10 @@ def visualize():
     }
     if isolated_emb is not None:
         result["isolated_embedding"] = isolated_emb.flatten().tolist()
+        result["iso_neighbors"] = build_neighbors_panel(
+            iso_neighbor_words, iso_sims, iso_top_indices, n_neighbors,
+            color_fn=_lava_color,
+        )
     if predicted_token is not None:
         result["predicted_token"] = predicted_token
         result["predicted_rank"] = predicted_rank

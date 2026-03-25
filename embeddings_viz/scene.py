@@ -16,6 +16,19 @@ def _viridis_color(value, value_min, value_max):
     return f"rgb({r},{g},{b})", t
 
 
+def _lava_color(value, value_min, value_max):
+    """Map a value to a lava-palette CSS rgb() string and a 0–1 fraction."""
+    t = (value - value_min) / (value_max - value_min) if value_max > value_min else 1.0
+    stops = [(48, 8, 8), (140, 20, 10), (210, 60, 10), (240, 140, 20), (255, 220, 80)]
+    s = t * (len(stops) - 1)
+    idx = min(int(s), len(stops) - 2)
+    frac = s - idx
+    r = int(stops[idx][0] + frac * (stops[idx + 1][0] - stops[idx][0]))
+    g = int(stops[idx][1] + frac * (stops[idx + 1][1] - stops[idx][1]))
+    b = int(stops[idx][2] + frac * (stops[idx + 1][2] - stops[idx][2]))
+    return f"rgb({r},{g},{b})", t
+
+
 def _make_point(word, coords, n_dims, **extra):
     """Build a single point dict for the scene JSON."""
     point = {
@@ -33,6 +46,7 @@ def build_scene_json(
     clicked_idx, neighbor_sims, is_3d,
     isolated_coords=None, candidate_coords=None,
     candidate_words=None, candidate_probs=None,
+    iso_neighbor_coords=None, iso_neighbor_words=None, iso_neighbor_sims=None,
 ):
     """Create the JSON payload consumed by the Three.js scene builder."""
     # Normalize all coordinates to a fixed scale centered around the mean
@@ -70,6 +84,22 @@ def build_scene_json(
         iso_norm = (isolated_coords[0] - center) * scale
         isolated_point = _make_point(words[clicked_idx] + " (isolated)", iso_norm, n_dims)
 
+    # Isolated-embedding neighbor points
+    iso_neighbor_points = []
+    if iso_neighbor_coords is not None and iso_neighbor_words:
+        iso_n_norm = (iso_neighbor_coords - center) * scale
+        if iso_neighbor_sims:
+            iso_sim_min, iso_sim_max = min(iso_neighbor_sims), max(iso_neighbor_sims)
+            iso_sim_range = iso_sim_max - iso_sim_min if iso_sim_max > iso_sim_min else 1.0
+            iso_norm_sims = [(s - iso_sim_min) / iso_sim_range for s in iso_neighbor_sims]
+        else:
+            iso_norm_sims = [0.5] * len(iso_neighbor_words)
+        for i, w in enumerate(iso_neighbor_words):
+            iso_neighbor_points.append(_make_point(
+                w, iso_n_norm[i], n_dims,
+                tint=float(iso_norm_sims[i]), rawSim=float(iso_neighbor_sims[i]),
+            ))
+
     # Next-token candidate points (generative models only)
     candidate_points = []
     if candidate_coords is not None and candidate_words:
@@ -88,19 +118,22 @@ def build_scene_json(
         "neighborPoints": neighbor_points,
         "selectedIndex": 0,
         "isolatedPoint": isolated_point,
+        "isoNeighborPoints": iso_neighbor_points,
         "candidatePoints": candidate_points,
     }
 
 
-def build_neighbors_panel(neighbor_words, sims, top_indices, n_neighbors):
+def build_neighbors_panel(neighbor_words, sims, top_indices, n_neighbors, color_fn=None):
     """Build the neighbor list for the inspector sidebar (top 15)."""
+    if color_fn is None:
+        color_fn = _viridis_color
     top_n = min(15, n_neighbors)
     top_sims = [float(sims[i]) for i in top_indices[:top_n]]
     sim_min = min(top_sims) if top_sims else 0
     sim_max = max(top_sims) if top_sims else 1
     neighbors = []
     for i in range(top_n):
-        color, fraction = _viridis_color(top_sims[i], sim_min, sim_max)
+        color, fraction = color_fn(top_sims[i], sim_min, sim_max)
         neighbors.append({
             "word": neighbor_words[i],
             "sim": top_sims[i],
