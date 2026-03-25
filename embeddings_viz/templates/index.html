@@ -1164,7 +1164,7 @@ async function fetchLayerEvolution() {
   const response = await fetch('/api/layer_evolution', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({selected_idx: selectedIdx, n_neighbors: 10}),
+    body: JSON.stringify({selected_idx: selectedIdx, n_neighbors: 20}),
   });
   const data = await response.json();
   buildLayerEvolution(data, box);
@@ -1246,7 +1246,7 @@ function buildLayerEvolution(data, container) {
   }
 
   // Title
-  svg += `<text x="${PAD}" y="${totalH - 6}" fill="#aaa" font-size="10">Top 10 neighbors for "${esc(data.selected_word)}" across ${numLayers} layers</text>`;
+  svg += `<text x="${PAD}" y="${totalH - 6}" fill="#aaa" font-size="10">Top ${N} neighbors for "${esc(data.selected_word)}" across ${numLayers} layers</text>`;
 
   svg += '</svg>';
   container.innerHTML = svg;
