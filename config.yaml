@@ -36,5 +36,5 @@ models:
   #   type: generative
 
   # Local model path example:
-  # - name: /home/rafael/models/my-custom-model
+  # - name: /home/user/models/my-custom-model
   #   type: generative
